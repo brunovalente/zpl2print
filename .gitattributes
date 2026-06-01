@@ -1,0 +1,5 @@
+# Arquivos .bat/.cmd DEVEM ter quebras de linha CRLF.
+# Com LF, o cmd.exe interpreta o .bat de forma incorreta (ex.: "set" vira "et",
+# blocos ( echo ... ) > arquivo falham) e o script quebra. Ver print-xml-zpl.bat.
+*.bat text eol=crlf
+*.cmd text eol=crlf

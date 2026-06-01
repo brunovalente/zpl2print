@@ -9,6 +9,8 @@ set "PRINTER_SHARE=ZEBRA"
 set "KEEP_ZPL=1"
 :: QUEUE_CHECK_SECONDS: aguarda N segundos e verifica se o job saiu da fila
 set "QUEUE_CHECK_SECONDS=2"
+:: QUEUE_MAX_WAIT_SECONDS: tempo maximo (s) aguardando a fila drenar; etiquetas grandes demoram >2s
+set "QUEUE_MAX_WAIT_SECONDS=30"
 :: AUTO_PORT_FAILOVER: 1=tenta trocar porta automaticamente quando a fila trava
 set "AUTO_PORT_FAILOVER=1"
 :: ============================================================
@@ -23,6 +25,7 @@ set "CURRENT_FILE="
 set "SOURCE_TYPE="
 set "GENERATED_ZPL="
 set "PRINT_SOURCE_FILE="
+set "SANITIZED_ZPL="
 set "EXIT_CODE=0"
 set "FINAL_ERROR_MSG="
 
@@ -108,6 +111,7 @@ if /I "%EXT%"==".zpl" (
     set "PRINT_SOURCE_FILE=%INPUT%"
 )
 
+call :sanitize_zpl
 call :print_with_failover "%PRINT_SOURCE_FILE%"
 if errorlevel 1 (
     set "EXIT_CODE=1"
@@ -131,6 +135,7 @@ if /I "%EXT%"==".xml" (
 
 :finalize
 call :clear_share_queue "end"
+if defined SANITIZED_ZPL if "%KEEP_ZPL%"=="0" if exist "%SANITIZED_ZPL%" del "%SANITIZED_ZPL%" >nul 2>&1
 if not "%EXIT_CODE%"=="0" (
     if not defined FINAL_ERROR_MSG set "FINAL_ERROR_MSG=Execucao finalizada com erro."
     call :log ERROR finished_with_error "execucao_finalizada_com_erro"
@@ -247,12 +252,12 @@ if errorlevel 1 (
     call :log WARN print_send_failed "falha_no_envio_raw_para_share"
     exit /b 1
 )
-call :wait_and_get_queue_count "%SHARE_PRINTER_NAME%" QUEUE_AFTER
-if !QUEUE_AFTER! LEQ !QUEUE_BEFORE! (
+call :wait_queue_drain "%SHARE_PRINTER_NAME%" "!QUEUE_BEFORE!"
+if "!DRAIN_RESULT!"=="1" (
     call :log INFO queue_consumed "fila_consumida_apos_envio"
     exit /b 0
 )
-call :log WARN queue_stuck "fila_nao_consumiu_job_apos_envio"
+call :log WARN queue_stuck "fila_nao_drenou_em_!QUEUE_MAX_WAIT_SECONDS!s"
 exit /b 1
 
 :resolve_share_printer
@@ -346,4 +351,50 @@ if !REMOVED_JOBS! GTR 0 (
 ) else (
     call :log INFO queue_already_empty "fila_ja_estava_vazia_!CLEAR_PHASE!"
 )
+exit /b 0
+
+:sanitize_zpl
+:: Saneia o ZPL (corrige coordenadas fracionarias e ^PW > 832) antes de imprimir.
+where node >nul 2>&1
+if errorlevel 1 (
+    call :log WARN sanitize_skipped "node_indisponivel_envio_sem_saneamento"
+    exit /b 0
+)
+if not exist "%PRINT_SOURCE_FILE%" exit /b 0
+set "SANITIZED_ZPL=%PRINT_SOURCE_FILE%.san.zpl"
+node "%BASE%scripts\sanitize-zpl.js" "%PRINT_SOURCE_FILE%" "%SANITIZED_ZPL%"
+if errorlevel 1 (
+    call :log WARN sanitize_failed "falha_no_saneamento_usando_original"
+    set "SANITIZED_ZPL="
+    exit /b 0
+)
+if not exist "%SANITIZED_ZPL%" (
+    call :log WARN sanitize_no_output "saida_saneada_nao_gerada_usando_original"
+    set "SANITIZED_ZPL="
+    exit /b 0
+)
+set "PRINT_SOURCE_FILE=%SANITIZED_ZPL%"
+call :log INFO sanitized "zpl_saneado_para_impressao"
+exit /b 0
+
+:wait_queue_drain
+:: Aguarda a fila drenar ate QUEUE_MAX_WAIT_SECONDS. %1=impressora %2=contagem_base.
+:: Define DRAIN_RESULT=1 se a fila voltou a <= base (job consumido), senao 0.
+set "DRAIN_RESULT=0"
+set "PS_TMP=%TEMP%\zpl2print_drain_%RANDOM%.ps1"
+(
+    echo $pn = '%~1'
+    echo $base = [int]'%~2'
+    echo $end = ^(Get-Date^).AddSeconds^(%QUEUE_MAX_WAIT_SECONDS%^)
+    echo $ok = 0
+    echo while ^(^(Get-Date^) -lt $end^) {
+    echo   try { $c = [int]^(^(Get-PrintJob -PrinterName $pn -ErrorAction Stop ^| Measure-Object^).Count^) } catch { $c = 0 }
+    echo   if ^($c -le $base^) { $ok = 1; break }
+    echo   Start-Sleep -Milliseconds 700
+    echo }
+    echo $ok
+) > "%PS_TMP%"
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_TMP%" 2^>nul`) do set "DRAIN_RESULT=%%I"
+del "%PS_TMP%" >nul 2>&1
+if not defined DRAIN_RESULT set "DRAIN_RESULT=0"
 exit /b 0
