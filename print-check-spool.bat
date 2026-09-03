@@ -5,7 +5,7 @@ setlocal
 :: CONFIGURACAO
 :: Nome local da impressora/fila que recebe os jobs RAW
 :: ============================================================
-set "PRINTER_NAME=Generic / Text Only"
+set "PRINTER_NAME=ZEBRA"
 
 if /I "%~1"=="status" goto :status
 if /I "%~1"=="clear" goto :clear
@@ -69,10 +69,10 @@ goto :done
 :help
 echo.
 echo Uso:
-echo   check-spool-zebra.bat status
-echo   check-spool-zebra.bat clear
-echo   check-spool-zebra.bat restart
-echo   check-spool-zebra.bat open
+echo   print-check-spool.bat status
+echo   print-check-spool.bat clear
+echo   print-check-spool.bat restart
+echo   print-check-spool.bat open
 echo.
 goto :done
 

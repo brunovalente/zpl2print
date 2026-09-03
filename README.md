@@ -75,13 +75,19 @@ print-xml-zpl.bat caminho\para\etiqueta.zpl
 
 ```bat
 set "PRINTER_SHARE=ZEBRA"
-set "KEEP_ZPL=0"
+set "KEEP_ZPL=1"
+set "QUEUE_CHECK_SECONDS=2"
+set "QUEUE_MAX_WAIT_SECONDS=30"
+set "AUTO_PORT_FAILOVER=1"
 ```
 
-| Variável        | Descrição                                                   |
-|-----------------|-------------------------------------------------------------|
-| `PRINTER_SHARE` | Nome do compartilhamento da impressora (`net share`)        |
-| `KEEP_ZPL`      | `0` = apaga o `.zpl` após imprimir · `1` = mantém para debug |
+| Variável                 | Descrição                                                            |
+|--------------------------|----------------------------------------------------------------------|
+| `PRINTER_SHARE`          | Nome do compartilhamento da impressora (`net share`)                 |
+| `KEEP_ZPL`               | `0` = apaga o `.zpl` após imprimir · `1` = mantém para debug          |
+| `QUEUE_CHECK_SECONDS`    | Espera N segundos antes de checar se o job saiu da fila               |
+| `QUEUE_MAX_WAIT_SECONDS` | Tempo máximo aguardando a fila drenar (etiquetas grandes demoram >2s) |
+| `AUTO_PORT_FAILOVER`     | `1` = tenta trocar de porta automaticamente quando a fila trava       |
 
 ---
 
@@ -128,19 +134,37 @@ Eventos registrados:
 | `unsupported_extension` | Extensão não suportada (não .xml/.zpl) |
 | `missing_argument`      | Nenhum arquivo informado               |
 
+Eventos de saneamento, fila e failover:
+
+| Evento                     | Descrição                                                    |
+|----------------------------|--------------------------------------------------------------|
+| `sanitized`                | ZPL saneado com sucesso antes do envio                       |
+| `sanitize_skipped`         | Saneamento pulado (Node ou script indisponível)              |
+| `sanitize_failed`          | `sanitize-zpl.js` retornou erro — segue com o arquivo original |
+| `queue_consumed`           | A impressora consumiu o job (sucesso confirmado)             |
+| `queue_pending`            | Job enviado, mas ainda há pendências na fila                 |
+| `queue_stuck`              | Fila não consumiu o job — dispara o failover de porta         |
+| `queue_cleared`            | Jobs pendentes removidos da fila                             |
+| `queue_already_empty`      | Fila já estava vazia                                         |
+| `printer_share_not_found`  | Nenhuma impressora com `ShareName=ZEBRA` (ver Troubleshooting) |
+| `failover_port_try`        | Tentando outra porta Zebra                                   |
+| `failover_port_switched`   | Porta do compartilhamento alterada                           |
+| `failover_success`         | Impressão concluída após trocar de porta                     |
+| `print_failed_all_ports`   | Falhou em todas as portas Zebra disponíveis                  |
+
 ---
 
 ## Diagnóstico da fila (spool)
 
-Use o utilitário `check-spool-zebra.bat` para inspecionar e corrigir rapidamente a fila da Zebra.
+Use o utilitário `print-check-spool.bat` para inspecionar e corrigir rapidamente a fila da Zebra.
 
 Comandos:
 
 ```cmd
-check-spool-zebra.bat status
-check-spool-zebra.bat clear
-check-spool-zebra.bat restart
-check-spool-zebra.bat open
+print-check-spool.bat status
+print-check-spool.bat clear
+print-check-spool.bat restart
+print-check-spool.bat open
 ```
 
 Sem argumentos, ele abre um menu interativo.
@@ -158,15 +182,33 @@ Sem argumentos, ele abre um menu interativo.
 
 ```
 zpl2print/
-├── check-spool-zebra.bat   # Diagnóstico e manutenção da fila
+├── print-check-spool.bat   # Diagnóstico e manutenção da fila
 ├── print-xml-zpl.bat       # Script principal (XML e ZPL)
 ├── scripts/
-│   └── xml-to-zpl.js       # Conversor NF-e XML → ZPL (Node.js)
+│   ├── xml-to-zpl.js       # Conversor NF-e XML → ZPL (Node.js)
+│   └── sanitize-zpl.js     # Saneia o ZPL antes do envio (ver abaixo)
+├── templates/              # Modelos ZPL 97x150 (danfe, entrega própria, correios)
 ├── logs/
 │   └── print-events.log    # Log de eventos (gerado automaticamente)
+├── temp/                   # ZPL intermediário e saneado (.san.zpl)
+├── logo-pana.zpl           # Logo em ZPL
+├── .gitattributes          # Força CRLF nos .bat (LF quebra o cmd.exe)
 ├── package.json
 └── README.md
 ```
+
+### Saneamento automático (`scripts/sanitize-zpl.js`)
+
+Todo ZPL passa por esse script antes de ir para a impressora — o evento `sanitized` no log confirma.
+
+Existe porque alguns geradores (as etiquetas dos **Correios**, principalmente) emitem ZPL que a ZD220
+**rejeita em silêncio**: o job sai da fila normalmente, mas nada é impresso. Dois casos tratados:
+
+- coordenadas com casas decimais (`^PW850.88`, `^FO610.88,76`) → truncadas para inteiro
+- `^PW` acima de 832 dots (104mm @ 203dpi, limite físico do cabeçote) → limitado a 832
+
+O conteúdo dos campos `^FD`/`^FV` é preservado byte a byte, para não corromper Data Matrix / Code128
+que legitimamente contenham pontos. A leitura/escrita usa `latin1` — ZPL não é UTF-8.
 
 ---
 
@@ -176,9 +218,33 @@ zpl2print/
 
 **Sintoma:** o script loga `printer_share_not_found` e nada é impresso.
 
-**Causa mais comum:** o compartilhamento `ZEBRA` está apontando para a porta errada ou foi perdido.
+**Antes de qualquer coisa, descubra qual dos dois casos é** — o sintoma no log é idêntico, mas a
+solução é oposta:
 
-**Como diagnosticar:**
+```powershell
+Get-Printer | Select-Object Name, ShareName, Shared, PortName, PrinterStatus
+```
+
+| O que você vê | Caso | Solução |
+|---|---|---|
+| Nenhuma linha Zebra/ZDesigner | **A impressora sumiu do Windows** | Ligue a ZD220 e reconecte o USB — ela reaparece sozinha. Depois confira o compartilhamento. |
+| Zebra aparece, mas `ShareName` vazio | Compartilhamento perdido | Recompartilhe como `ZEBRA` (passos abaixo) |
+| Zebra aparece com `ShareName=ZEBRA` | Porta errada | Siga a verificação de portas abaixo |
+
+> **Importante:** quando a ZD220 está desligada ou desconectada, ela **desaparece por completo** de
+> `Get-Printer` — não fica listada como offline. Uma lista sem nenhuma Zebra quase sempre significa
+> impressora desligada, não configuração corrompida. Confirme com:
+>
+> ```powershell
+> Get-PnpDevice | Where-Object { $_.FriendlyName -match 'Zebra|ZD2|ZTC' }
+> ```
+>
+> Se não retornar nada, o Windows não está enxergando o hardware — é cabo/energia, não software.
+
+**Estado correto (referência):** duas entradas apontando para a mesma porta USB —
+`ZDesigner ZD220-203dpi ZPL` (o driver) e `ZEBRA` (a compartilhada, que é a usada pelo script).
+
+**Como diagnosticar em detalhe:**
 
 ```cmd
 wmic printer get Name,ShareName,PortName,DriverName /format:list
