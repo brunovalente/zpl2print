@@ -32,19 +32,20 @@ set "FINAL_ERROR_MSG="
 call :clear_share_queue "start"
 
 :: Valida argumento
-if "%~1"=="" (
-    call :log ERROR missing_argument "argumento_arquivo_nao_informado"
-    echo Uso: arraste um arquivo .xml ou .zpl sobre este .bat ou execute:
-    echo   print-xml-zpl.bat caminho\para\arquivo.xml
-    echo   print-xml-zpl.bat caminho\para\arquivo.zpl
-    pause
-    set "EXIT_CODE=1"
-    goto :finalize
-)
+if not "%~1"=="" goto :argument_present
+call :log ERROR missing_argument "argumento_arquivo_nao_informado"
+echo Uso: arraste um arquivo .xml ou .zpl sobre este .bat ou execute:
+echo   print-xml-zpl.bat caminho\para\arquivo.xml
+echo   print-xml-zpl.bat caminho\para\arquivo.zpl
+pause
+set "EXIT_CODE=1"
+goto :finalize
+
+:argument_present
 
 set "INPUT=%~1"
-set "CURRENT_FILE=%INPUT%"
-set "EXT=%~x1"
+set "CURRENT_FILE=!INPUT!"
+for %%F in ("!INPUT!") do set "EXT=%%~xF"
 set "SOURCE_TYPE=%EXT%"
 
 :: Valida extensao
@@ -58,10 +59,10 @@ if /I not "%EXT%"==".xml" if /I not "%EXT%"==".zpl" (
 )
 
 :: Valida existencia do arquivo
-if not exist "%INPUT%" (
+if not exist "!INPUT!" (
     call :log ERROR file_not_found "arquivo_nao_encontrado"
     echo ERRO: Arquivo nao encontrado:
-    echo   %INPUT%
+    echo   !INPUT!
     pause
     set "EXIT_CODE=1"
     goto :finalize
@@ -80,7 +81,7 @@ if /I "%EXT%"==".xml" (
     )
     call :log INFO start "inicio_processamento_xml"
     set "GENERATED_ZPL=%~dpn1.zpl"
-    node "%BASE%scripts\xml-to-zpl.js" "%INPUT%" "!GENERATED_ZPL!"
+    node "%BASE%scripts\xml-to-zpl.js" "!INPUT!" "!GENERATED_ZPL!"
     if errorlevel 1 (
         call :log ERROR zpl_generate_failed "falha_ao_gerar_zpl"
         echo ERRO: Falha ao gerar o ZPL a partir do XML.
@@ -108,11 +109,11 @@ if /I "%EXT%"==".xml" (
 :: Bloco ZPL: imprime diretamente
 if /I "%EXT%"==".zpl" (
     call :log INFO start "inicio_processamento_zpl"
-    set "PRINT_SOURCE_FILE=%INPUT%"
+    set "PRINT_SOURCE_FILE=!INPUT!"
 )
 
 call :sanitize_zpl
-call :print_with_failover "%PRINT_SOURCE_FILE%"
+call :print_with_failover "!PRINT_SOURCE_FILE!"
 if errorlevel 1 (
     set "EXIT_CODE=1"
     set "FINAL_ERROR_MSG=Falha ao imprimir em todas as portas Zebra disponiveis."
@@ -124,18 +125,18 @@ echo ZPL enviado com sucesso para "\\localhost\%PRINTER_SHARE%"
 
 if /I "%EXT%"==".xml" (
     if "%KEEP_ZPL%"=="0" (
-        del "%GENERATED_ZPL%" >nul 2>&1
+        del "!GENERATED_ZPL!" >nul 2>&1
         call :log INFO zpl_deleted "arquivo_zpl_removido"
     ) else (
         call :log INFO zpl_kept "arquivo_zpl_mantido_para_debug"
         echo ZPL mantido em:
-        echo   %GENERATED_ZPL%
+        echo   !GENERATED_ZPL!
     )
 )
 
 :finalize
 call :clear_share_queue "end"
-if defined SANITIZED_ZPL if "%KEEP_ZPL%"=="0" if exist "%SANITIZED_ZPL%" del "%SANITIZED_ZPL%" >nul 2>&1
+if defined SANITIZED_ZPL if "%KEEP_ZPL%"=="0" if exist "!SANITIZED_ZPL!" del "!SANITIZED_ZPL!" >nul 2>&1
 if not "%EXIT_CODE%"=="0" (
     if not defined FINAL_ERROR_MSG set "FINAL_ERROR_MSG=Execucao finalizada com erro."
     call :log ERROR finished_with_error "execucao_finalizada_com_erro"
@@ -157,7 +158,7 @@ set "PS_TMP=%TEMP%\zpl2print_ts_%RANDOM%.ps1"
 echo (Get-Date).ToUniversalTime().AddHours(-3).ToString('yyyy-MM-dd HH:mm:ss') > "%PS_TMP%"
 for /f "usebackq delims=" %%I in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_TMP%" 2^>nul`) do set "LOG_TS=%%I"
 del "%PS_TMP%" >nul 2>&1
->> "%LOG_FILE%" echo [%LOG_TS% UTC-3] [%LOG_LEVEL%] [print-xml-zpl.bat] [%LOG_EVENT%] type="%SOURCE_TYPE%" file="%CURRENT_FILE%" printer="%PRINTER_SHARE%" message="%LOG_MESSAGE%"
+>> "%LOG_FILE%" echo [%LOG_TS% UTC-3] [%LOG_LEVEL%] [print-xml-zpl.bat] [%LOG_EVENT%] type="%SOURCE_TYPE%" file="!CURRENT_FILE!" printer="%PRINTER_SHARE%" message="%LOG_MESSAGE%"
 exit /b 0
 
 :check_queue_health
@@ -189,7 +190,7 @@ exit /b 0
 
 :print_with_failover
 set "FILE_TO_PRINT=%~1"
-call :attempt_send_and_check "%FILE_TO_PRINT%"
+call :attempt_send_and_check "!FILE_TO_PRINT!"
 if not errorlevel 1 exit /b 0
 
 if not "%AUTO_PORT_FAILOVER%"=="1" (
@@ -218,7 +219,7 @@ for /f "usebackq delims=" %%I in (`powershell -NoProfile -ExecutionPolicy Bypass
     if errorlevel 1 (
         call :log WARN failover_port_switch_failed "falha_ao_alterar_porta_compartilhada"
     ) else (
-        call :attempt_send_and_check "%FILE_TO_PRINT%"
+        call :attempt_send_and_check "!FILE_TO_PRINT!"
         if not errorlevel 1 (
             set "FAILOVER_SUCCESS=1"
             call :log INFO failover_success "impressao_com_failover_de_porta"
@@ -237,7 +238,7 @@ exit /b 1
 
 :attempt_send_and_check
 set "FILE_TO_PRINT=%~1"
-if not exist "%FILE_TO_PRINT%" (
+if not exist "!FILE_TO_PRINT!" (
     call :log ERROR print_source_not_found "arquivo_de_impressao_nao_encontrado"
     exit /b 1
 )
@@ -247,7 +248,7 @@ if errorlevel 1 (
     exit /b 1
 )
 call :get_queue_count "%SHARE_PRINTER_NAME%" QUEUE_BEFORE
-copy /b "%FILE_TO_PRINT%" "\\localhost\%PRINTER_SHARE%" >nul
+copy /b "!FILE_TO_PRINT!" "\\localhost\%PRINTER_SHARE%" >nul
 if errorlevel 1 (
     call :log WARN print_send_failed "falha_no_envio_raw_para_share"
     exit /b 1
@@ -360,20 +361,20 @@ if errorlevel 1 (
     call :log WARN sanitize_skipped "node_indisponivel_envio_sem_saneamento"
     exit /b 0
 )
-if not exist "%PRINT_SOURCE_FILE%" exit /b 0
-set "SANITIZED_ZPL=%PRINT_SOURCE_FILE%.san.zpl"
-node "%BASE%scripts\sanitize-zpl.js" "%PRINT_SOURCE_FILE%" "%SANITIZED_ZPL%"
+if not exist "!PRINT_SOURCE_FILE!" exit /b 0
+set "SANITIZED_ZPL=!PRINT_SOURCE_FILE!.san.zpl"
+node "%BASE%scripts\sanitize-zpl.js" "!PRINT_SOURCE_FILE!" "!SANITIZED_ZPL!"
 if errorlevel 1 (
     call :log WARN sanitize_failed "falha_no_saneamento_usando_original"
     set "SANITIZED_ZPL="
     exit /b 0
 )
-if not exist "%SANITIZED_ZPL%" (
+if not exist "!SANITIZED_ZPL!" (
     call :log WARN sanitize_no_output "saida_saneada_nao_gerada_usando_original"
     set "SANITIZED_ZPL="
     exit /b 0
 )
-set "PRINT_SOURCE_FILE=%SANITIZED_ZPL%"
+set "PRINT_SOURCE_FILE=!SANITIZED_ZPL!"
 call :log INFO sanitized "zpl_saneado_para_impressao"
 exit /b 0
 
